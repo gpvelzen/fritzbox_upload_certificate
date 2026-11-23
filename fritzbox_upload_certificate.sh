@@ -1,19 +1,11 @@
 #!/bin/bash
 
-# Copyright (C) 2020 Franz Schwartau
+# Copyright (C) 2020 Franz Schwartau (Updated with PBKDF2 & Python support)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # default parameters from environment
 baseurl="${FRITZBOX_BASEURL:-}"
@@ -27,10 +19,10 @@ username="${FRITZBOX_USERNAME:-}"
 tmp_dir="${TMPDIR:-/tmp}"
 
 CURL_CMD="curl"
-ICONV_CMD="iconv"
 OPENSSL_CMD="openssl"
+PYTHON_CMD="python3"
 
-SUCCESS_MESSAGES="^ *(Das SSL-Zertifikat wurde erfolgreich importiert|Import of the SSL certificate was successful|El certificado SSL se ha importado correctamente|Le certificat SSL a été importé|Il certificato SSL è stato importato( correttamente)?|Import certyfikatu SSL został pomyślnie zakończony)\.$"
+SUCCESS_MESSAGES="^ *(Das SSL-Zertifikat wurde erfolgreich importiert|Import of the SSL certificate was successful|El certificado SSL se ha importado correctamente|Le certificat SSL a été importé|Il certificato SSL è stato importato( correttamente)?|Import certyfikatu SSL zosta pomylnie zakoczony|Het SSL-certificaat werd ge.*mporteerd)\.$"
 
 function usage {
   echo "Usage: $0 [-b baseurl] [-u username] [-p password] [[-c certpath]|[-f fullchain] [-k privkey]]" >&2
@@ -44,22 +36,9 @@ function error {
   exit 1
 }
 
-md5cmd=
-
-for cmd in md5 md5sum; do
-  if command -v "${cmd}" >/dev/null 2>&1; then
-    md5cmd=${cmd}
-    break
-  fi
-done
-
-if [ -z "${md5cmd}" ]; then
-  error "Missing command for calculating MD5 hash"
-fi
-
 exit_code=0
 
-for cmd in ${CURL_CMD} ${ICONV_CMD} ${OPENSSL_CMD}; do
+for cmd in ${CURL_CMD} ${OPENSSL_CMD} ${PYTHON_CMD}; do
   if ! command -v "${cmd}" >/dev/null 2>&1; then
     echo "Please install ${cmd}" >&2
     exit_code=1
@@ -181,15 +160,38 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-# login to the box and get a valid SID
-challenge="$(${CURL_CMD} "${curl_opts[@]}" "${baseurl}/login_sid.lua" | process_curl_output | sed -ne 's/^.*<Challenge>\([0-9a-f][0-9a-f]*\)<\/Challenge>.*$/\1/p')"
+# login to the box and get a valid SID (supports both v1 MD5 and v2 PBKDF2)
+challenge="$(${CURL_CMD} "${curl_opts[@]}" "${baseurl}/login_sid.lua?version=2" | process_curl_output | sed -ne 's/^.*<Challenge>\([^<]*\)<\/Challenge>.*$/\1/p')"
 if [ -z "${challenge}" ]; then
   error "Invalid challenge received."
 fi
 
-md5hash="$(echo -n "${challenge}-${password}" | ${ICONV_CMD} -f ASCII -t UTF-16LE | ${md5cmd} | awk '{print $1}')"
+if [[ "${challenge}" == 2\$* ]]; then
+  # PBKDF2 (version 2)
+  response="$(${PYTHON_CMD} -c '
+import sys, hashlib
+challenge = sys.argv[1]
+password = sys.argv[2].encode("utf-8")
+parts = challenge.split("$")
+iter1 = int(parts[1])
+salt1 = bytes.fromhex(parts[2])
+iter2 = int(parts[3])
+salt2 = bytes.fromhex(parts[4])
+hash1 = hashlib.pbkdf2_hmac("sha256", password, salt1, iter1)
+hash2 = hashlib.pbkdf2_hmac("sha256", hash1, salt2, iter2)
+print(f"{parts[4]}${hash2.hex()}")
+' "${challenge}" "${password}")"
+else
+  # Legacy MD5 (version 1 via Python UTF-16LE)
+  md5hash="$(${PYTHON_CMD} -c '
+import sys, hashlib
+data = f"{sys.argv[1]}-{sys.argv[2]}".encode("utf-16le")
+print(hashlib.md5(data).hexdigest())
+' "${challenge}" "${password}")"
+  response="${challenge}-${md5hash}"
+fi
 
-sid="$(${CURL_CMD} "${curl_opts[@]}" "${baseurl}/login_sid.lua?username=${username}&response=${challenge}-${md5hash}" | process_curl_output | sed -ne 's/^.*<SID>\([0-9a-f][0-9a-f]*\)<\/SID>.*$/\1/p')"
+sid="$(${CURL_CMD} "${curl_opts[@]}" --request POST --data-urlencode "username=${username}" --data-urlencode "response=${response}" "${baseurl}/login_sid.lua?version=2" | process_curl_output | sed -ne 's/^.*<SID>\([0-9a-f][0-9a-f]*\)<\/SID>.*$/\1/p')"
 if [ -z "${sid}" ] || [ "${sid}" = "0000000000000000" ]; then
   error "Login failed."
 fi
@@ -213,8 +215,11 @@ ${certbundle}
 EOD
 
 # upload the certificate to the box
-${CURL_CMD} "${curl_opts[@]}" --request POST "${baseurl}/cgi-bin/firmwarecfg" --header "Content-type: multipart/form-data; boundary=${boundary}" --data-binary "@${request_file}" | process_curl_output | grep -qE "${SUCCESS_MESSAGES}"
-# shellcheck disable=SC2181
-if [ $? -ne 0 ]; then
+result="$(${CURL_CMD} "${curl_opts[@]}" --request POST "${baseurl}/cgi-bin/firmwarecfg" --header "Content-type: multipart/form-data; boundary=${boundary}" --data-binary "@${request_file}" | process_curl_output | grep -E "${SUCCESS_MESSAGES}")"
+
+if [ -z "${result}" ]; then
   error "Could not import certificate. Maybe an unsupported key type was used. Older Fritz!OS versions support RSA keys only."
+else
+  echo "${result}" | sed -e 's/^[[:space:]]*//'
 fi
+
