@@ -20,12 +20,6 @@ You have to provide a baseurl for your FRITZ!Box, a username, a password, a cert
 
 For debugging set the environment variable `FRITZBOX_DEBUG` to any non-empty string or use the command line option `-d`. The HTTP requests and responses will be written to a temporary file `/tmp/fritzbox_debug.XXXXXX` then.
 
-## Limitations
-
-Older Fritz!OS versions support RSA keys only. Newer versions support EC keys, too. EC key support was confirmed with Fritz!OS version 8.25. If a certificate cannot be imported, it is worth checking the key type.
-
-This script currently only implements the legacy MD5 challenge-response login. FRITZ!OS >= 7.24 also offers a PBKDF2-based login (via `login_sid.lua?version=2`), which is not supported yet. Computing a PBKDF2 response requires OpenSSL >= 3.0 (`openssl kdf`) which is not available at a large scale yet. As login always happens over TLS, and MD5 is only used inside that encrypted channel, this is considered an acceptable trade-off for now, **provided you never run curl with `-k`/`--insecure`**. PBKDF2 support may be added later once OpenSSL >= 3.0 is more widely available.
-
 ## Examples
 
 Using command line options:
@@ -74,20 +68,7 @@ export FRITZBOX_PRIVKEY=./.lego/certificates/fritz.box.key
 
 | Device                    | FRITZ!OS | works? |
 | ------------------------- | -------- | ------ |
-| FRITZ!Box 5530 Fiber      | 7.81     | ✅     |
-| FRITZ!Box 5590 Fiber      | 8.02     | ✅     |
-| FRITZ!Box 6490 Cable      | 7.20     | ✅     |
-| FRITZ!Box 6660 Cable      | 7.57     | ✅     |
-| FRITZ!Box 6690 Cable      | 8.21     | ✅     |
-| FRITZ!Box 7360            | 6.86     | ✅     |
-| FRITZ!Box 7490            | 7.12     | ✅     |
-| FRITZ!Box 7490            | 7.57     | ✅     |
-| FRITZ!Box 7530 AX         | 7.57     | ✅     |
-| FRITZ!Box 7580            | 7.30     | ✅     |
-| FRITZ!Box 7590            | 7.29     | ✅     |
-| FRITZ!Repeater 1200 AX    | 7.57     | ❌     |
-| FRITZ!WLAN Repeater DVB-C | 7.01     | ✅     |
+| FRITZ!Box 7690            | 8.51     | ✅     |
 
-Let me know what your results are.
 
-![GitHub](https://img.shields.io/github/license/franzs/fritzbox_upload_certificate)
+
